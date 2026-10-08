@@ -1,0 +1,14 @@
+packages:
+  - packages/*
+  - server
+  - extension
+
+# pnpm 10 blocks postinstall scripts by default. Plasmo's bundler (Parcel)
+# needs these native modules compiled or the build cannot run.
+onlyBuiltDependencies:
+  - "@parcel/watcher"
+  - "@swc/core"
+  - esbuild
+  - lmdb
+  - msgpackr-extract
+  - sharp

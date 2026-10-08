@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Typecheck, the server unit tests, and the extension build. None of the
+      # three needs a secret: `env.ts` throws at import, so every module that
+      # reaches it is unreachable from a unit test by construction, and the
+      # suites only cover pure modules. The evals are deliberately *not* here —
+      # they spend real OpenAI credit and write to a live Supabase project.
+      - run: pnpm verify
+
+      # A content script that imports the `@crm/shared` barrel pulls zod into
+      # its bundle, and Parcel stubs it, so the script dies at load. Typecheck,
+      # the build and the side panel all stay green while every scraper is
+      # silently dead. This is the only signal that catches it.
+      # Scoped to the content scripts on purpose. The side panel is an extension
+      # page, not an injected script, so zod in *its* bundle is fine.
+      - name: No zod in any content-script bundle
+        run: |
+          if grep -l zod extension/build/chrome-mv3-prod/apply-watch.*.js \
+                          extension/build/chrome-mv3-prod/linkedin-*.js; then
+            echo "::error::A content-script bundle contains zod, so Parcel will stub it and the script will die at load. Import runtime values from a zod-free subpath (@crm/shared/constants, /profile-text, /vault, /job-title) rather than the barrel."
+            exit 1
+          fi

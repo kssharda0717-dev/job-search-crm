@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+.plasmo/
+out/
+*.log
+*.tsbuildinfo
+
+# Secrets. `.env.example` is the template that *is* committed.
+# The wildcard matters more than the two exact names: the file that leaks is
+# rarely `.env`, it is the `server/.env.bak` someone made before editing it.
+.env
+.env.*
+!.env.example
+
+# Private keys of any kind. Nothing here should ever produce one, which is
+# exactly why an accidental one would go unnoticed.
+*.pem
+*.key
+*.p12
+
+# Resumes and cover letters. This project handles them by design; none of them
+# belong in version control.
+*.pdf
+*.docx
+
+.DS_Store

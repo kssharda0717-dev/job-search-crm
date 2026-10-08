@@ -1,0 +1,55 @@
+# Run with:
+#
+#   docker compose --env-file server/.env up
+#
+# The `--env-file` flag is not decoration. Compose reads variables from the
+# project root by default, and this project's configuration lives in
+# `server/.env` because that is where the non-Docker commands look for it.
+# Pointing Compose at the same file means there is one place to edit, not two.
+
+name: jobsearchcrm
+
+services:
+  # Applies pending migrations and exits. `server` will not start until this
+  # succeeds, so a failed migration keeps the old schema *and* an un-started
+  # server rather than a new server talking to a half-built database.
+  migrate:
+    image: jobsearchcrm:local
+    build: .
+    command: ["pnpm", "--filter", "@crm/server", "migrate"]
+    environment:
+      # The only service that gets this. Listing variables explicitly rather
+      # than handing both services the whole .env is what keeps ADR-063 true:
+      # an `env_file:` here would quietly give the long-running server a
+      # superuser password it has no code to use.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is not set. Supabase dashboard -> Connect -> Connection String. See server/.env.example.}
+    restart: "no"
+
+  server:
+    image: jobsearchcrm:local
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      # Published to the host's loopback only. The server binds 0.0.0.0 inside
+      # the container because a container's 127.0.0.1 is its own and Docker
+      # forwards published ports to the bridge address instead — bind loopback
+      # in there and the server accepts nothing while looking perfectly healthy.
+      # The guarantee `index.ts` cares about is "not reachable from the LAN",
+      # and this line is what provides it. Changing it to "8787:8787" exposes
+      # the OpenAI and service-role keys to every device on the network.
+      - "127.0.0.1:8787:8787"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL is not set}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY is not set}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is not set}
+      CRM_AUTH_TOKEN: ${CRM_AUTH_TOKEN:?CRM_AUTH_TOKEN is not set}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-chrome-extension://*}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      VECTOR_STORE: ${VECTOR_STORE:-pgvector}
+      QDRANT_URL: ${QDRANT_URL:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    restart: unless-stopped

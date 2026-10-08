@@ -1,0 +1,38 @@
+PRIYA RAGHAVAN
+Senior Software Engineer — Bengaluru, India
+
+SKILLS
+Python, Go, TypeScript, Java, Kotlin, Rust, Scala, Ruby, C++, Bash, SQL, PostgreSQL, MySQL, MongoDB, Redis, Cassandra, Kafka, RabbitMQ, Flink, Debezium, Kinesis, SQS, Celery, Temporal, Airflow, Spark, dbt, Snowflake, Docker, Kubernetes, Helm, Istio, Terraform, Ansible, Consul, Vault, AWS, GCP, Azure, Jenkins, GitHub Actions, ArgoCD, Datadog, Prometheus, Grafana, OpenTelemetry, Sentry, Jaeger, Splunk, React, Next.js, Vue, Svelte, Tailwind, Vite, GraphQL, gRPC, REST, Protobuf, Elasticsearch, pgvector, Pinecone, Qdrant, PyTorch, scikit-learn, Jest, Playwright, pytest
+
+NORTHWIND LOGISTICS — Staff Engineer, Platform (2021—present)
+Replaced a nightly batch reconciliation job with a Kafka consumer group, cutting the window between a shipment scan and its ledger entry from 9 hours to 4 minutes.
+Introduced idempotency keys and a dead-letter topic after a partial outage double-charged 1,842 shipments; reprocessing from the DLQ recovered every one without a manual write.
+Owned the partition rebalancing strategy during a migration from 12 to 96 partitions, holding p99 consumer lag under 30 seconds through the cutover.
+Wrote the backpressure policy the ingestion tier still runs on, trading throughput for bounded memory when a downstream service degrades.
+
+NORTHWIND LOGISTICS — Hiring and mentoring
+Ran the platform team's technical interview loop for two years, interviewing 96 candidates and rewriting the take-home exercise after noticing it selected for free time rather than skill.
+Cut median time-to-offer from 31 days to 12 by collapsing four sequential interviews into a single panel day.
+Mentored 5 engineers through their first on-call rotation; 3 were promoted within 18 months.
+Wrote the team's onboarding runbook, which brought the median first-pull-request time down from 11 days to 3.
+
+CALDER HEALTH — Software Engineer, Workforce Systems (2017—2021)
+Maintained PeopleSoft HCM payroll integrations covering 32,330 hourly employees across 41 states, including the retroactive pay-adjustment pipeline.
+Rebuilt the benefits-enrolment reconciliation that ran every open-enrolment season, reducing manual HR corrections from roughly 400 cases per cycle to 27.
+Automated the quarterly compliance export for state wage reporting, which had been a four-day manual process for two payroll analysts.
+Sat in the weekly call with the HR operations team, which is where most of the real requirements came from rather than from tickets.
+
+HELIOS SUPPORT TOOLS — Software Engineer (2015—2017)
+Built the refund-approval workflow used by 180 support agents, replacing a shared spreadsheet that had no audit trail.
+Reduced average handle time on billing disputes from 14 minutes to 6 by surfacing the customer's last three invoices inline in the agent console.
+Added a macro system so agents could write their own canned responses; adoption reached 71 percent of the team within a quarter.
+Ran a weekly triage of the top ten recurring contact reasons with the support leads, and shipped fixes for four of them.
+
+BRIGHTFOLD (SEED STAGE) — Founding Engineer (2013—2015)
+Employee number three. Built the first billing system and the customer-facing dashboard.
+Took the product from zero to 1,200 paying customers and 840,000 dollars of annual recurring revenue before the Series A.
+Chose managed Postgres over a self-hosted cluster, which meant one engineer could run the whole stack while the team was under five people.
+Wrote the pricing migration that moved every existing customer from per-seat to usage-based billing without a single involuntary churn.
+
+EDUCATION
+B.E. Computer Science, Ashford Institute of Technology, 2013

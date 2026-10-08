@@ -1,0 +1,23 @@
+{
+  "extends": "plasmo/templates/tsconfig.base",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // Plasmo's base config still uses classic "node" resolution, which ignores
+    // package.json "exports" and so cannot see @crm/shared/constants. Parcel
+    // resolves like a bundler, so this makes tsc agree with the actual build.
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["chrome", "node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "~*": ["./src/*"]
+    }
+  },
+  "include": [".plasmo/index.d.ts", "./**/*.ts", "./**/*.tsx"],
+  "exclude": ["node_modules"]
+}

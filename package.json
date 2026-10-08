@@ -1,0 +1,20 @@
+{
+  "name": "job-search-crm",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:server": "pnpm --filter @crm/server dev",
+    "dev:extension": "pnpm --filter @crm/extension dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "verify": "pnpm -r typecheck && pnpm --filter @crm/server test && pnpm --filter @crm/extension build",
+    "verify:release": "pnpm verify && pnpm --filter @crm/server eval:retrieval && pnpm --filter @crm/server eval:drafting"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

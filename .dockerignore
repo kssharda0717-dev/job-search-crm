@@ -1,0 +1,26 @@
+# Keep the build context small and keep secrets out of it. Anything listed here
+# is invisible to `docker build`, including to a `COPY . .` someone adds later.
+
+# Never. The image takes its configuration from the environment at run time;
+# a .env baked into a layer is a secret you cannot delete by editing the file.
+**/.env
+**/.env.local
+
+# Installed inside the image against the lockfile. Copying the host's tree in
+# would ship macOS-native binaries to a Linux container.
+**/node_modules
+
+# Build output, rebuilt or irrelevant.
+extension/build
+extension/.plasmo
+**/*.tsbuildinfo
+
+# Not part of the server.
+.git
+.github
+docs
+scripts
+extension
+
+# Resumes. Nothing under here belongs in an image.
+**/*.pdf

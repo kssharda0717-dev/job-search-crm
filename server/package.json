@@ -1,0 +1,34 @@
+{
+  "name": "@crm/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx test/*.test.ts",
+    "migrate": "tsx src/migrate/run.ts",
+    "eval:retrieval": "tsx src/eval/run-retrieval.ts",
+    "eval:drafting": "tsx src/eval/run-drafting.ts"
+  },
+  "dependencies": {
+    "@crm/shared": "workspace:*",
+    "@hono/node-server": "^1.13.7",
+    "@qdrant/js-client-rest": "^1.19.0",
+    "@supabase/supabase-js": "^2.46.1",
+    "dotenv": "^16.4.5",
+    "hono": "^4.6.12",
+    "openai": "^4.73.0",
+    "pdfjs-dist": "^4.10.38",
+    "pg": "^8.23.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

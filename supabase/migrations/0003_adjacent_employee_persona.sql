@@ -1,0 +1,11 @@
+-- Add a fourth persona for non-engineering employees at a target company.
+--
+-- The three original personas all assume the recipient is technical or hires
+-- technical people. A Support Team Lead is neither, and classifying one as
+-- Peer_Engineer made the agent ask him how his team balances model inference
+-- cost against latency — a question outside his job, which reads as a mass
+-- mail-merge and earns no reply.
+--
+-- `add value` cannot run inside a transaction block in older Postgres, and it
+-- is not reversible, so this is its own migration.
+alter type persona add value if not exists 'Adjacent_Employee';
