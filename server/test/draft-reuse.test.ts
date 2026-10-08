@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { draftPredatesProfile, isOncePerContact } from "../src/agent/draft";
+import { draftPredatesProfile, isOncePerContact } from "../src/agent/draft-policy";
 
 /**
  * A draft is written the moment an acceptance is detected, which is normally

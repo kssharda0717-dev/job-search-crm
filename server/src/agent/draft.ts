@@ -23,6 +23,7 @@ import {
   summaryOnlyFigures,
   ungroundedNumbers,
 } from "./critique";
+import { draftPredatesProfile, isOncePerContact } from "./draft-policy";
 import { personaFromHeadline } from "./persona";
 import { priorThread, threadBlock } from "./thread";
 import { TOOL_DEFINITIONS, type ToolContext, runTool } from "./tools";
@@ -157,47 +158,6 @@ Format:
 - First person, as the candidate. Conversational, not formal.
 - At most five sentences. Shorter is better. No exclamation marks.
 - Output ONLY the message body. No preamble, no surrounding quotes.`;
-
-/**
- * True when a waiting draft was written before the recipient's profile was read,
- * and so cannot have been built from it.
- *
- * Compared as instants, never as strings: PostgREST renders `timestamptz` in
- * whatever offset the connection asks for, so a string compare reads the wall
- * clock rather than the instant and `11:00+00:00` sorts before `14:00+05:30`
- * despite being two and a half hours later. That exact mistake already shipped
- * once in `services/followup.ts`.
- *
- * An unreadable or absent timestamp means "no evidence the draft is stale" —
- * keep the waiting draft rather than silently regenerating on every click.
- */
-export function draftPredatesProfile(
-  profileReadAt: string | null | undefined,
-  draftCreatedAt: string,
-): boolean {
-  if (!profileReadAt) return false;
-  const read = Date.parse(profileReadAt);
-  const drafted = Date.parse(draftCreatedAt);
-  if (Number.isNaN(read) || Number.isNaN(drafted)) return false;
-  return read > drafted;
-}
-
-/**
- * Message types that happen at most once per contact.
- *
- * You introduce yourself to someone once. A second "I recently applied for the
- * Oracle Fusion HCM role" to a person who already received it, and replied or
- * did not, is not a draft — it is the system having forgotten. A `follow_up` is
- * deliberately excluded: chasing twice is a legitimate thing to want.
- */
-const ONCE_PER_CONTACT: ReadonlySet<MessageType> = new Set([
-  "connection_note",
-  "initial_outreach",
-]);
-
-export function isOncePerContact(type: MessageType): boolean {
-  return ONCE_PER_CONTACT.has(type);
-}
 
 /** Postgres `unique_violation`, raised by migration 0011's partial index. */
 const DUPLICATE_DRAFT = "23505";

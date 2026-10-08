@@ -13,18 +13,29 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # 22, to match the `node:22-slim` the Dockerfile runs. 20 is past
+      # end-of-life and `@supabase/supabase-js` warns on it; more to the point,
+      # CI testing a different major than the artefact users run is a gap.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      # Typecheck, the server unit tests, and the extension build. None of the
-      # three needs a secret: `env.ts` throws at import, so every module that
-      # reaches it is unreachable from a unit test by construction, and the
-      # suites only cover pure modules. The evals are deliberately *not* here —
-      # they spend real OpenAI credit and write to a live Supabase project.
+      # Typecheck, the server unit tests, and the extension build. The evals are
+      # deliberately *not* here — they spend real OpenAI credit and write to a
+      # live Supabase project.
+      #
+      # No secrets are set, and that is load-bearing rather than incidental.
+      # `env.ts` throws at import, so any test whose import graph reaches it
+      # fails here — which is the only place that check happens. A developer
+      # machine has `server/.env` sitting beside the code, dotenv loads it, and
+      # the same suite passes. This job is therefore the single signal that the
+      # "pure logic lives away from `env`" rule in docs/RULES.md is still true;
+      # it caught `rerank.ts` and `draft.ts` having drifted on the first run.
+      # Do not add dummy secrets here to make a red build green: that deletes
+      # the check and the rule goes unenforced everywhere.
       - run: pnpm verify
 
       # A content script that imports the `@crm/shared` barrel pulls zod into

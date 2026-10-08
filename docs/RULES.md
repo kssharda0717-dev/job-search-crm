@@ -210,6 +210,23 @@ Breaking one is grounds for reverting the change, not for a discussion.
 
 - Anything worth testing must be **pure**: arguments in, value out, no
   database, no network, no `env`.
+- **"No `env`" means the whole import graph, not the function.** ESM evaluates
+  every module in the graph before the first assertion runs, so a pure function
+  exported from a file that imports `db` or `openai` is as untestable as an
+  impure one — `env.ts` throws at import and takes the suite with it. Put it in
+  its own file: `rag/grades.ts`, `agent/draft-policy.ts`, `rag/lens-query.ts`,
+  `rag/embedding-guard.ts`, `migrate/plan.ts` all exist for this reason.
+- **`pnpm verify` cannot catch that violation on your machine.** `server/.env`
+  sits beside the code, dotenv loads it, and `env.ts` is satisfied. CI has no
+  `.env`, so CI is the only place the rule is enforced — which is how
+  `rerank.ts` and `draft.ts` drifted and still showed 260 green locally while
+  20 of those tests had not run at all in a clean environment. A green local
+  run is necessary and not sufficient; wait for CI.
+- **Never fix that failure by adding dummy secrets to CI.** It makes the build
+  green by deleting the only check, and the rule then goes unenforced
+  everywhere. Extract the function instead. Never mock `env` either — a mock
+  has to be installed before the import that reads it, which is a module
+  load-order problem dressed up as a test.
 - Add a test for every new critique rule, persona rule, and parsing helper.
 - A test must encode the **real failure**, not a synthetic one. The suite
   quotes actual bad drafts that shipped; keep doing that.

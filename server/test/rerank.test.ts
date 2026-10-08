@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HybridSearchHit } from "@crm/shared";
 import { concernLensQuery } from "../src/rag/lens-query";
-import { applyGrades, parseGrades } from "../src/rag/rerank";
+import { applyGrades, parseGrades } from "../src/rag/grades";
 
 function hit(n: number): HybridSearchHit {
   return {
