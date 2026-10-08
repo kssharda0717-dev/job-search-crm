@@ -3,7 +3,7 @@
 Current state. Overwrite this file as the project moves; do not append a log.
 Permanent decisions live in `docs/DECISIONS.md` and are not repeated here.
 
-**Last updated:** 2026-10-03
+**Last updated:** 2026-10-08
 
 ---
 
@@ -17,7 +17,7 @@ The build is green:
 
 ```
 pnpm -r typecheck                  ✅
-pnpm --filter @crm/server test     ✅ 240 tests / 47 suites
+pnpm --filter @crm/server test     ✅ 260 tests / 52 suites
 pnpm --filter @crm/extension build ✅ no content-script bundle contains zod
 ```
 
@@ -74,6 +74,53 @@ code, so dotenv satisfied it and 20 tests had never once run clean. Fixed by
 extraction (`rag/grades.ts`, `agent/draft-policy.ts`), not by giving CI dummy
 secrets, which would have deleted the only enforcement of the rule. CI also
 moved 20 → 22 to match the `node:22-slim` the Dockerfile ships.
+
+### Released v1.0.0, 2026-10-08 — installing needs no toolchain
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: re-run `pnpm verify`
+against the *tagged* commit (a tag can point at a commit no branch ever built),
+multi-arch buildx push to GHCR, then `gh release create` with the built
+extension zip. `permissions: {packages: write, contents: write}`; the repo's own
+`GITHUB_TOKEN` is enough.
+
+Verified live rather than assumed: the GHCR manifest fetched with an
+**anonymous** token lists `linux/amd64` + `linux/arm64` (arm64 selected natively
+on Apple Silicon), the release carries `job-search-crm-extension-v1.0.0.zip`
+(121 KB), and a `pull` + `up` on a clean machine ran `migrate` to exit 0, left
+`server` `Up (healthy)`, answered `/health` with `{"ok":true}` and still 401'd
+`/api/jobs`.
+
+Three things that are easy to get wrong and are load-bearing:
+
+- **`docker-compose.yml` carries no `build:` key, deliberately.** Compose
+  *builds* rather than pulls whenever both are present, so a `build:` there
+  would make every first-time user compile the dependency tree — the entire cost
+  the published image removes. Building is opt-in via
+  `docker-compose.build.yml`, which also retags to `jobsearchcrm:local` so a
+  hand-built image cannot squat the name `pull` resolves.
+- **`up -d` returns before the server is listening.** Docker's published port
+  accepts the connection and closes it, so the ~8 s startup window reads as
+  `curl: (52) Empty reply from server` — a crash, not a race. The documented
+  command is `up -d --wait`, which blocks on the Dockerfile `HEALTHCHECK`
+  (measured 7.9 s).
+- **GHCR packages are created PRIVATE even from a public repo.** Flip once by
+  hand: github.com/\<user\>?tab=packages → the package → Package settings →
+  Danger Zone → Change visibility. Until then every `docker compose pull` fails
+  with an auth error that says nothing about visibility.
+
+The version lives in three places — the tag, `package.json`,
+`extension/package.json` — and the workflow fails on disagreement. The server
+and the extension always share one version; they are two halves of one private
+protocol.
+
+**There is no auto-update, on purpose.** An image-watcher such as Watchtower
+restarts `server` without knowing `migrate` exists, so the first release
+carrying a migration would run new code against an old schema — and
+`recordDraftRun` swallows unknown-column errors by design, so the failure is
+silent. Updating goes through `docker compose pull && up -d --wait`, the only
+path that re-runs `migrate` first. An unpacked extension cannot auto-update at
+all; Chrome does that only for Web Store installs, and the Reload click is the
+price of staying off the store.
 
 ### Fixed in the same pass
 
@@ -841,13 +888,19 @@ These are on the user's machine, not in the code. Nothing verified them.
       rows should be deleted. The scraper and the server now refuse these
       strings, but nothing can recover what the titles were meant to be, and
       guessing them would poison the same ranking signals more quietly.
-- [ ] **Rotate the password that was pasted into an earlier chat session.** A
-      credential shared in plain text should be considered compromised.
-- [ ] **Rotate `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` and
-      `CRM_AUTH_TOKEN` before the repo is public.** None was ever committed —
-      `server/.env` is gitignored — but each has been in a terminal transcript,
-      and a key that has been displayed anywhere is burned. The service-role key
-      bypasses RLS, so it is the one that matters most.
+- [x] **All four credentials rotated** (2026-10-08, before the first push): the
+      database password, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` and
+      `CRM_AUTH_TOKEN`. None was ever committed — `server/.env` is gitignored —
+      but each had appeared in a terminal transcript, and a key displayed
+      anywhere is burned. Evidence: 27 job rows returned through a containerised
+      server using all of them, and the new service-role key is a `sb_secret_…`
+      rather than the previous `eyJ…` JWT, so it is demonstrably not a re-read.
+- [ ] **Flip the GHCR package to public** if a future fork republishes it.
+      Already done for this repo, but GHCR creates packages private even from a
+      public repo and nothing warns you: github.com/\<user\>?tab=packages →
+      package → Package settings → Danger Zone → Change visibility. Until then
+      `docker compose pull` fails with an auth error that never mentions
+      visibility.
 
 ---
 
@@ -855,10 +908,13 @@ These are on the user's machine, not in the code. Nothing verified them.
 
 **TASK-1006, 1009, 1010, 1011, 1016 and Known issues §13 are code-complete as of
 2026-10-01** (ADR-052…057), and **TASK-1017 as of 2026-10-03** (ADR-058…062) —
-**240 tests / 47 suites green, no zod in any content script**. As of 2026-10-03
+**260 tests / 52 suites green, no zod in any content script**. As of 2026-10-03
 `0012`, `0013` and `0014` are all applied, `eval:drafting` has been re-run twice
-at **1.000** numeric faithfulness, and TASK-905 is closed. What is left is the
-corpus and two live observations:
+at **1.000** numeric faithfulness, and TASK-905 is closed. The repo is public
+and **v1.0.0 is released** (2026-10-08): migrations apply themselves (ADR-063),
+the server ships as a published multi-arch image and the extension as a zip, so
+installing needs neither Node nor pnpm. What is left is the corpus and two live
+observations:
 
 1. **Re-upload the remaining thirteen resumes**, then read one new
    `resume_chunks` row and confirm it starts with a section name. On old chunks

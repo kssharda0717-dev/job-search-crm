@@ -19,8 +19,14 @@ How the system is built and why the pieces sit where they do.
 | Tests | `node:test` + `tsx` |
 | Package manager | pnpm workspaces (monorepo) |
 
-There is **no deployment target**. This runs on the user's machine: `pnpm dev`
-for the proxy, an unpacked extension in Chrome.
+There is **no hosted deployment**, and there is no shared backend. Every install
+runs the whole system on one person's machine: the proxy on loopback, an
+unpacked extension in Chrome, and that person's own Supabase project and OpenAI
+key. What ships is a *packaging* of that, not a service — a published container
+image (`ghcr.io/kssharda0717-dev/job-search-crm`, amd64 + arm64) and a prebuilt
+extension zip on each `v*` tag, so installing needs no Node, pnpm or git. The
+proxy still holds a service-role key that bypasses RLS, which is why it binds
+loopback and why hosting it for other people is out of scope permanently.
 
 ## Three processes, one contract
 
@@ -88,6 +94,12 @@ never held in a module-level variable.
 ```
 CRM/
 ├── docs/                       ← this documentation set
+├── Dockerfile                  One image, two commands (`start` and `migrate`)
+├── docker-compose.yml          Names the published image; deliberately no `build:`
+├── docker-compose.build.yml    Opt-in override that builds from this tree
+├── .github/workflows/
+│   ├── ci.yml                  `pnpm verify` + the content-script zod grep
+│   └── release.yml             On a `v*` tag: re-verify, push GHCR, attach the zip
 ├── packages/shared/src/
 │   ├── types.ts                Domain entities (zod schemas + inferred types)
 │   ├── api.ts                  Request/response contracts for every route
@@ -113,12 +125,14 @@ CRM/
 │   │   │   ├── search.ts       Two-lens retrieval, then rerank
 │   │   │   ├── fuse.ts         RRF within a lens (k=60) and across lenses (k=1)
 │   │   │   ├── rerank.ts       LLM grades 0–2 on domain + reader fit, fails open
+│   │   │   ├── grades.ts       Parsing/applying those grades (pure; see note below)
 │   │   │   ├── embedding-guard.ts  Refuse a corpus embedded by another model
 │   │   │   ├── store/          `VectorStore`: pgvector | qdrant
 │   │   │   └── resume-name.ts  Canonical `<Name>_<Company>_<Role>.pdf`
 │   │   ├── agent/
 │   │   │   ├── draft.ts        System prompt + ReAct loop + repair/shorten
 │   │   │   ├── tools.ts        Tool schemas and dispatch
+│   │   │   ├── draft-policy.ts Whether to draft at all (pure; see note below)
 │   │   │   ├── persona.ts      Rule-based headline → persona
 │   │   │   ├── thread.ts       Prior messages rendered for the prompt (pure)
 │   │   │   └── critique.ts     Machine critique of a draft (pure)
@@ -129,6 +143,9 @@ CRM/
 │   │   │   ├── run-retrieval.ts, run-drafting.ts   The two harnesses
 │   │   │   ├── gates.ts        Committed floors; sets a non-zero exit code
 │   │   │   └── metrics.ts, faithfulness.ts, dataset.ts, seed.ts
+│   │   ├── migrate/
+│   │   │   ├── plan.ts         What to apply, in what order (pure; checksums)
+│   │   │   └── run.ts          Holds the Postgres connection + `DATABASE_URL`
 │   │   └── services/
 │   │       ├── contacts.ts     Capture, enrich, backfill-link
 │   │       ├── company-match.ts Company name normalisation + containment rule
@@ -488,16 +505,24 @@ These are the rules a change is reviewed against.
 ### Purity and testability
 
 9. **Logic worth testing must be pure.** `critique.ts`, `persona.ts`,
-   `chunk.ts`, `keywords.ts`, `lens-query.ts`, `embedding-guard.ts`,
-   `resume-name.ts` and `company-match.ts` take arguments and return values —
-   no database, no network, no `env`.
+   `draft-policy.ts`, `chunk.ts`, `keywords.ts`, `lens-query.ts`, `grades.ts`,
+   `embedding-guard.ts`, `resume-name.ts`, `company-match.ts` and
+   `migrate/plan.ts` take arguments and return values — no database, no
+   network, no `env`.
 
-   This is why `lens-query.ts` and `embedding-guard.ts` are separate files
-   rather than functions inside `search.ts`. `rag/embeddings.ts` constructs the
+   This is why they are separate files rather than functions inside
+   `search.ts`, `rerank.ts` or `draft.ts`. `rag/embeddings.ts` constructs the
    OpenAI client from `env` at module load and `env` throws when unset, so
    **anything reachable from that import graph is unreachable from a unit
    test**. Pulling a pure function out into its own module is the cheapest way
    to make it testable; do that rather than mocking `env`.
+
+   **`pnpm verify` cannot catch a violation of this rule on your machine.**
+   `server/.env` sits beside the code, dotenv loads it, `env.ts` is satisfied.
+   CI has no `.env` and is the only place the rule is enforced — which is how
+   `grades.ts` and `draft-policy.ts` came to exist: the first push reported 238
+   passing where local said 260, with two suites dead at import and 20 tests
+   that had never once run clean.
 10. **A rule the model must follow is enforced in code, not only in the
     prompt.** Prompt text is a preference; `critiqueDraft` is enforcement.
 

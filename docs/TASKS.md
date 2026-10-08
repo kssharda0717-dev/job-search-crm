@@ -932,6 +932,65 @@ confirmation that the stored value is real.
 that *does* have Node, so "works with no Node installed" is inferred from the
 image carrying its own runtime rather than demonstrated on a clean host.
 
+### TASK-1020 — Publish the image and the extension, so installing needs no toolchain ✅ DONE
+
+2026-10-08, **v1.0.0**. `.github/workflows/release.yml`, `docker-compose.yml`,
+`docker-compose.build.yml`, `CHANGELOG.md`, README → Install / Updating.
+
+TASK-1019 removed "have the right Node" from *running the server* but not from
+*getting the extension*: the install still said clone, `pnpm install`,
+`pnpm build`. A `build:` key in the compose file also meant a first-time user
+compiled the whole dependency tree, because **Compose prefers building over
+pulling whenever both are present** — the opposite of what a published image is
+for.
+
+- [x] **A `v*` tag publishes both halves.** The workflow re-runs `pnpm verify`
+      against the *tagged* commit — a tag can point at a commit no branch ever
+      built, so trusting the earlier CI run is trusting a different tree — then
+      buildx-pushes `linux/amd64` + `linux/arm64` to GHCR and `gh release
+      create`s with the built extension zip. `permissions: {packages: write,
+      contents: write}`; the repo's own `GITHUB_TOKEN` suffices, no PAT.
+- [x] **The version lives in three places and the workflow fails on
+      disagreement** — the tag, `package.json`, `extension/package.json`. The
+      server and the extension always share one version; they are two halves of
+      one private protocol, and versioning them separately only creates a
+      compatibility matrix nobody maintains.
+- [x] **`docker-compose.yml` carries no `build:` key.** Building is opt-in via
+      `docker-compose.build.yml`, which also retags to `jobsearchcrm:local` so a
+      hand-built image cannot squat the name everyone's `pull` resolves.
+      `CRM_IMAGE` overrides for pinning or a fork.
+- [x] **The documented command is `up -d --wait`.** Plain `up -d` returns ~8 s
+      before the server is listening; Docker's published port accepts the
+      connection and closes it, so the race reads as `curl: (52) Empty reply
+      from server` — a crash. `--wait` blocks on the Dockerfile `HEALTHCHECK`
+      (measured 7.9 s, then the curl succeeds first try). Found on the first
+      real install from the published image, because the README had the two
+      commands on adjacent lines.
+- [x] **GHCR creates packages PRIVATE even from a public repo**, and nothing
+      says so: every `docker compose pull` fails with an auth error that never
+      mentions visibility. Flipped once by hand (Package settings → Danger Zone
+      → Change visibility), then **proved** public by fetching the OCI manifest
+      with an *anonymous* ghcr.io token — both architectures present, arm64
+      selected natively on Apple Silicon with no emulation.
+- [x] **No auto-update, on purpose** — ADR candidate, and the one place the
+      popular answer is wrong. An image-watcher such as Watchtower restarts
+      `server` without knowing `migrate` exists, so the first release carrying a
+      migration runs new code against an old schema, and `recordDraftRun`
+      swallows unknown-column errors by design, so it fails *silently*. It also
+      wants the Docker socket (root-equivalent) in a project whose whole story
+      is "keys never leave loopback". Updating is `docker compose pull && up -d
+      --wait`, the only path that re-runs `migrate` first. An unpacked extension
+      cannot auto-update at all — Chrome does that only for Web Store installs,
+      and the Reload click is the price of staying off the store.
+
+**Done when:** ~~a user with neither Node nor pnpm can install both halves.~~
+Observed 2026-10-08: `pull` fetched the published image, `migrate` exited 0,
+`server` came up `Up (healthy)`, `/health` → `{"ok":true}`, `/api/jobs` → 401,
+and the release carries `job-search-crm-extension-v1.0.0.zip` (121 KB). Same
+caveat as TASK-1019: verified on a machine that has Node, so "no toolchain
+needed" rests on the image carrying its own runtime and the zip being prebuilt,
+not on a clean-host run.
+
 ---
 
 ## Phase 11 — Deferred, deliberately
