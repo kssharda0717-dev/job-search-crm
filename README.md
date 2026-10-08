@@ -7,6 +7,24 @@ hybrid-search RAG over your own resume bullets.
 
 Every message is drafted, never sent. See [Security model](#security-model).
 
+**Want to run it?** → [Setup](#setup). **Want to see how it works?** →
+[How it works](#how-it-works).
+
+## The parts worth reading
+
+Each of these exists because something simpler was tried first and failed in a
+specific, documented way. The failure is named in each section.
+
+| | |
+| --- | --- |
+| [Two-lens retrieval](#how-it-works) | Steering retrieval with the job description gives a CTO and a support coordinator the same three bullets. One lens is the reader's own profile, the other is what their role screens for. Each fuses pgvector cosine with Postgres full-text via RRF (k=60); the lenses are then fused with each other at k=1. |
+| [An LLM reranker over the fusion](#how-it-works) | The resume's skills wall and education block ranked top-2 on *both* legs of *both* lenses, taking 11 of 18 evidence slots. No weighting fixes that. A grader that scores each candidate 0–2 can, because it can see that a list of technologies makes no claim. |
+| [Machine-checked drafts](#how-it-works) | `critique.ts` rejects **any figure that does not appear in the retrieved resume text**, plus contentless phrasing and unanswerable questions, and repairs up to twice. A repair is kept only if it improves `(ungrounded figures, style problems)` read left to right. |
+| [Evals with hard gates](#evals) | Retrieval (MRR/nDCG/recall, scored per leg) and drafting (faithfulness, evidence overlap) **exit non-zero** on a floor breach. They used to print `FAIL` and return 0. |
+| [Observability](#observability) | One `draft_runs` row per run: evidence chunk ids, ungrounded-figure count, critique problems, repair passes, tokens, latency. Faithfulness over any window is a SQL query. |
+| [Self-applying migrations](#1-supabase) | A `schema_migrations` ledger with checksums and an advisory lock. Refuses to run if the database and the repository disagree about history. |
+| [Constraints as design](#security-model) | Never clicks Send. Never opens a contact's profile, because LinkedIn tells them. Sweeps jittered 30–90 min, paused 22:00–07:00. |
+
 ## Layout
 
 ```
@@ -21,258 +39,6 @@ docker-compose.yml Migrate to completion, then start the server
 
 The extension never holds an OpenAI or Supabase key. It talks only to the proxy,
 authenticated with a shared secret.
-
-## Documentation
-
-`docs/` is the source of truth. This README is a quickstart; it does not restate
-the architecture.
-
-| File | What it answers |
-| --- | --- |
-| [`docs/PRD.md`](docs/PRD.md) | What the product is and why, plus the known gaps |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How it is built, and the rules that keep it that way |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | How the side panel and toasts look and behave |
-| [`docs/RULES.md`](docs/RULES.md) | The rulebook for changing this codebase |
-| [`docs/TASKS.md`](docs/TASKS.md) | What is built, what is open |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Why each decision was made, and what failed first |
-| [`docs/MEMORY.md`](docs/MEMORY.md) | Current state and known issues |
-| [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) | What "working" means |
-| [`docs/EVALUATION.md`](docs/EVALUATION.md) | How retrieval and drafting are measured |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model and the full security checklist |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to get a change compiling and reviewed |
-| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what is in scope |
-
-## Setup
-
-### 1. Supabase
-
-Create a project. That is the whole step — you do not run any SQL by hand.
-
-The schema is applied by a migration runner, once `server/.env` exists (step 2):
-
-```bash
-pnpm --filter @crm/server migrate
-```
-
-It reads a `schema_migrations` ledger, applies only the files that are missing,
-in order, and records each with a checksum. Running it twice is a no-op. Running
-it after a `git pull` applies whatever is new. It refuses — loudly, with a
-non-zero exit — if the database and the repository disagree about history: a
-file that was edited after being applied, a recorded migration that no longer
-exists on disk, or two files sharing a number. See
-[ADR-063](docs/DECISIONS.md#adr-063--migrations-apply-themselves-from-a-ledger-in-a-container-that-exits).
-
-> **Upgrading a database you migrated by hand**, before this runner existed, run
-> `pnpm --filter @crm/server migrate -- --baseline` once. It records the files
-> you already applied without re-running them. New installs must not use it.
-
-For reference, this is what the runner applies:
-
-```
-0001_init.sql                              tables, pgvector, pg_trgm, RRF search
-0002_storage_and_rls.sql                   private resumes bucket, deny-all RLS
-0003_adjacent_employee_persona.sql         + Adjacent_Employee
-0004_founder_executive_persona.sql         + Founder_Executive
-0005_sparse_rank_length_normalization.sql  ts_rank_cd normalization flag
-0006_split_dense_and_sparse_search.sql     dense/sparse RPCs; fusion moves to TS
-0007_record_embedding_model.sql            which model embedded each chunk
-0008_draft_runs.sql                        one row per drafting run
-0009_escape_like_and_unique_chunks.sql     escape_like(); unique (resume_id, chunk_index)
-0010_contact_profile_text.sql              contacts.profile_text, profile_read_at
-0011_one_unsent_draft_per_contact.sql      one unsent draft per (contact, type)
-0012_message_review.sql                    messages.review — what the checker still said
-0013_corpus_wide_search_for_unlinked_contacts.sql   p_job_id may be null
-0014_record_accepted_repairs.sql           rewrites kept, not just attempted
-```
-
-`0001` enables the `vector` and `pg_trgm` extensions. `0002` turns on RLS with
-**no policies**, so anon and authenticated roles can read nothing; only the
-server's service-role key gets through.
-
-`0003` and `0004` are separate files because `alter type … add value` cannot run
-inside a transaction alongside other statements; the runner detects that from
-the SQL and runs them outside one.
-
-The rest of this section is what each migration buys you, written as what
-happens without it. You should not be able to reach these states now — the
-runner stops on a failure instead of continuing — but several of them fail
-*silently*, which is why they are worth naming.
-
-Skip `0003`/`0004` and drafting fails at
-the insert with an invalid enum value. Skip `0005` and the sparse ranking still
-favours whichever chunk is longest. Skip `0006` and **every draft fails**: the
-server no longer calls `hybrid_search_resume_chunks`, which that migration drops
-in favour of `dense_search_resume_chunks` and `sparse_search_resume_chunks`.
-Skip `0007` and **every resume upload fails**, because the indexer writes a
-column that does not exist. Skip `0008` and drafting still works but nothing is
-recorded — deliberately, since telemetry must not be able to fail a draft.
-Skip `0009` and **resume upload fails too**: the chunk upsert names
-`(resume_id, chunk_index)` as its `ON CONFLICT` target, and without
-`escape_like()` a company containing `%` or `_` matches every tracked job. Skip
-`0010` and **every contact capture and enrich fails** on an unknown column.
-Skip `0011` and drafting still works, but nothing stops two overlapping sweeps
-from writing two drafts for the same contact — the guard in `generateDraft` is a
-read-then-write race, and ~25 profile opens once produced 7 drafts for 4
-contacts in 19 seconds. Skip `0012` and **every draft fails** on insert: the
-draft is saved with its own review attached, and the column would not exist.
-Skip `0013` and drafting still works, but every contact with no linked
-application keeps retrieving nothing — `where c.job_id = null` is never true, so
-this one fails *silently* and looks like it worked. Skip `0014` and drafting
-still works, but every `draft_runs` insert is rejected for an unknown column;
-`recordDraftRun` swallows that by design, so the symptom is a
-`[draft_runs] insert failed` warning in the server log and a table that quietly
-stops growing.
-
-### 2. Server
-
-```bash
-pnpm install
-cp server/.env.example server/.env
-```
-
-Fill in `server/.env`:
-
-| Variable | Where it comes from |
-| --- | --- |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API |
-| `DATABASE_URL` | Supabase → the **Connect** button in the top bar → Connection String. (Not Project Settings → Database; that page only resets the password now.) Used **only** by `migrate`; the server never reads it. Take the box labelled **Session pooler** (port 5432); its username is `postgres.<project-ref>`, dot included. Not the **transaction** pooler on 6543: the runner holds a session-scoped `pg_advisory_lock`, and that pooler hands the connection to someone else between statements. The *direct* connection works too, but only from an IPv6 host — which rules it out under Docker, see below |
-| `OPENAI_API_KEY` | platform.openai.com |
-| `CRM_AUTH_TOKEN` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
-| `ALLOWED_ORIGINS` | leave as `chrome-extension://*` until you know your extension id |
-| `HOST` | optional; defaults to `127.0.0.1`. Only the container overrides it — see `docker-compose.yml` |
-| `TAVILY_API_KEY` | optional; enables company-news icebreakers on follow-ups |
-| `VECTOR_STORE` | optional; `pgvector` (default) or `qdrant` |
-| `QDRANT_URL`, `QDRANT_API_KEY` | required only when `VECTOR_STORE=qdrant` |
-
-Switching `VECTOR_STORE` changes where vectors live but does not migrate an
-existing corpus — re-index through the Vault, or the new store answers every
-query with nothing. `pnpm --filter @crm/server eval:retrieval` prints the active
-store name first for exactly this reason.
-
-Then apply the schema and start the proxy:
-
-```bash
-pnpm --filter @crm/server migrate # creates every table, once
-pnpm --filter @crm/server dev     # http://localhost:8787
-curl localhost:8787/health        # {"ok":true}
-```
-
-Requires Node 20+. Node 22 is recommended — `@supabase/supabase-js` prints a
-deprecation warning on 20.
-
-#### Running it in the background
-
-`dev` holds a terminal open and dies when you close it. To have the proxy start
-at login and stay up on its own:
-
-```bash
-./scripts/macos-service.sh install
-```
-
-That registers a launchd agent (macOS). It starts the proxy now and at every
-login, restarts it if it exits, and writes stdout and stderr to
-`~/Library/Logs/jobsearchcrm/server.log`.
-
-```bash
-./scripts/macos-service.sh status      # registered? and is /health answering?
-./scripts/macos-service.sh logs        # follow the log
-./scripts/macos-service.sh restart     # after editing .env or server code
-./scripts/macos-service.sh uninstall
-```
-
-`status` checks the port separately from the agent, because launchd reports a
-crash-looping agent as registered — and the only question the extension cares
-about is whether `/health` answers.
-
-Run `install` **or** `dev`, not both; the second to start fails on a port
-already in use. The service runs `start`, not `dev`, so it does **not** reload
-on file changes — run `restart` after editing server code.
-
-On Linux the equivalent is a systemd user unit; there is no script for it yet.
-
-#### Running it with Docker
-
-Docker replaces both the Node install and the launchd agent, and works the same
-on macOS, Windows and Linux. Install Docker Desktop, fill in `server/.env` as
-above, then from the repository root:
-
-```bash
-docker compose --env-file server/.env up -d
-curl localhost:8787/health        # {"ok":true}
-```
-
-That builds one image and runs two things from it. `migrate` applies pending
-migrations and exits; `server` starts only once `migrate` has exited
-successfully, so a failed migration leaves you with the old schema and no
-server rather than a new server talking to a half-built database.
-
-`--env-file server/.env` is required, and **on every compose command, not just
-`up`**. Compose interpolates the file before it does anything at all, so even
-`docker compose ps` fails without it — with five "required variable is missing a
-value" errors rather than anything about the flag. It is needed because Compose
-looks in the repository root by default and the configuration lives in
-`server/.env`, so that the Docker and non-Docker paths read the same file.
-
-**If you have just reset your database password, wait two minutes before
-believing `password authentication failed for user "postgres"`.** The session
-pooler caches the old credential briefly, so the first run after a reset can be
-rejected with a message that sounds final. Observed here with a byte-identical
-connection string failing and then succeeding five minutes later with nothing
-changed. Retry before you start editing anything.
-
-**`DATABASE_URL` must be the session pooler here, not the direct connection.**
-On newer Supabase projects `db.<ref>.supabase.co` has an AAAA record and no A
-record, and Docker's Linux VM has no global IPv6 address, so `migrate` dies
-with:
-
-```
-getaddrinfo ENOTFOUND db.<ref>.supabase.co
-```
-
-which reads like a typo and is not one. `net.connect` resolves with
-`ADDRCONFIG`, which discards AAAA results on a host that cannot route them,
-leaving no addresses at all — a plain `dns.lookup` in the same container still
-returns the IPv6 address, so the name is fine and only the connect path fails.
-The session pooler is IPv4. (Verified inside the image, 2026-10-08.)
-
-Two deliberate details in `docker-compose.yml`, both load-bearing:
-
-- **Only `migrate` is given `DATABASE_URL`.** The server has no code that uses
-  it and should not hold a superuser password for the hours it runs (ADR-063).
-  This is why the file lists variables one by one instead of handing both
-  services the whole `.env`.
-- **The port is published as `127.0.0.1:8787:8787`.** Dropping the prefix would
-  expose the OpenAI and service-role keys to every device on your network. The
-  container itself binds `0.0.0.0`, because a container's `127.0.0.1` is its own
-  loopback and nothing outside can reach it; the loopback guarantee is provided
-  by that publish address instead. → `docs/SECURITY.md`.
-
-Useful afterwards:
-
-```bash
-docker compose --env-file server/.env ps            # STATUS should say (healthy)
-docker compose --env-file server/.env logs -f server
-docker compose --env-file server/.env restart server  # after editing server/.env
-docker compose --env-file server/.env down            # stop
-```
-
-Run Docker **or** `dev` **or** the launchd agent — never two at once; the second
-fails on a port already in use.
-
-### 3. Extension
-
-```bash
-pnpm --filter @crm/extension build
-```
-
-Load `extension/build/chrome-mv3-prod` via `chrome://extensions` → Developer
-mode → Load unpacked. Open the side panel, go to **Settings**, and enter the
-proxy URL and the same `CRM_AUTH_TOKEN`. Nothing works until both are set.
-
-For a tighter CORS policy, copy the extension id Chrome assigns and set
-`ALLOWED_ORIGINS=chrome-extension://<id>` in `server/.env`.
-
-Use `pnpm --filter @crm/extension dev` for hot reload during development.
 
 ## How it works
 
@@ -430,34 +196,283 @@ trade-off. → ADR-007.
 **Resumes store a `storage_path`, not a blob.** Postgres is a poor place for
 multi-megabyte binaries; the bytes live in a private Storage bucket.
 
+## Setup
+
+Three steps: a Supabase project, the server, the extension. You do not run any
+SQL by hand.
+
+### 1. Supabase
+
+Create a project. That is the whole step.
+
+The schema is applied by a migration runner, once `server/.env` exists (step 2):
+
+```bash
+pnpm --filter @crm/server migrate
+```
+
+It reads a `schema_migrations` ledger, applies only the files that are missing,
+in order, and records each with a checksum. Running it twice is a no-op. Running
+it after a `git pull` applies whatever is new. It refuses — loudly, with a
+non-zero exit — if the database and the repository disagree about history: a
+file that was edited after being applied, a recorded migration that no longer
+exists on disk, or two files sharing a number. See
+[ADR-063](docs/DECISIONS.md#adr-063--migrations-apply-themselves-from-a-ledger-in-a-container-that-exits).
+
+> **Upgrading a database you migrated by hand**, before this runner existed, run
+> `pnpm --filter @crm/server migrate -- --baseline` once. It records the files
+> you already applied without re-running them. New installs must not use it.
+
+<details>
+<summary>What the runner applies, and what each migration buys you</summary>
+
+```
+0001_init.sql                              tables, pgvector, pg_trgm, RRF search
+0002_storage_and_rls.sql                   private resumes bucket, deny-all RLS
+0003_adjacent_employee_persona.sql         + Adjacent_Employee
+0004_founder_executive_persona.sql         + Founder_Executive
+0005_sparse_rank_length_normalization.sql  ts_rank_cd normalization flag
+0006_split_dense_and_sparse_search.sql     dense/sparse RPCs; fusion moves to TS
+0007_record_embedding_model.sql            which model embedded each chunk
+0008_draft_runs.sql                        one row per drafting run
+0009_escape_like_and_unique_chunks.sql     escape_like(); unique (resume_id, chunk_index)
+0010_contact_profile_text.sql              contacts.profile_text, profile_read_at
+0011_one_unsent_draft_per_contact.sql      one unsent draft per (contact, type)
+0012_message_review.sql                    messages.review — what the checker still said
+0013_corpus_wide_search_for_unlinked_contacts.sql   p_job_id may be null
+0014_record_accepted_repairs.sql           rewrites kept, not just attempted
+```
+
+`0001` enables the `vector` and `pg_trgm` extensions. `0002` turns on RLS with
+**no policies**, so anon and authenticated roles can read nothing; only the
+server's service-role key gets through.
+
+`0003` and `0004` are separate files because `alter type … add value` cannot run
+inside a transaction alongside other statements; the runner detects that from
+the SQL and runs them outside one.
+
+The rest is what each migration buys you, written as what happens without it.
+You should not be able to reach these states now — the runner stops on a failure
+instead of continuing — but several of them fail *silently*, which is why they
+are worth naming.
+
+Skip `0003`/`0004` and drafting fails at
+the insert with an invalid enum value. Skip `0005` and the sparse ranking still
+favours whichever chunk is longest. Skip `0006` and **every draft fails**: the
+server no longer calls `hybrid_search_resume_chunks`, which that migration drops
+in favour of `dense_search_resume_chunks` and `sparse_search_resume_chunks`.
+Skip `0007` and **every resume upload fails**, because the indexer writes a
+column that does not exist. Skip `0008` and drafting still works but nothing is
+recorded — deliberately, since telemetry must not be able to fail a draft.
+Skip `0009` and **resume upload fails too**: the chunk upsert names
+`(resume_id, chunk_index)` as its `ON CONFLICT` target, and without
+`escape_like()` a company containing `%` or `_` matches every tracked job. Skip
+`0010` and **every contact capture and enrich fails** on an unknown column.
+Skip `0011` and drafting still works, but nothing stops two overlapping sweeps
+from writing two drafts for the same contact — the guard in `generateDraft` is a
+read-then-write race, and ~25 profile opens once produced 7 drafts for 4
+contacts in 19 seconds. Skip `0012` and **every draft fails** on insert: the
+draft is saved with its own review attached, and the column would not exist.
+Skip `0013` and drafting still works, but every contact with no linked
+application keeps retrieving nothing — `where c.job_id = null` is never true, so
+this one fails *silently* and looks like it worked. Skip `0014` and drafting
+still works, but every `draft_runs` insert is rejected for an unknown column;
+`recordDraftRun` swallows that by design, so the symptom is a
+`[draft_runs] insert failed` warning in the server log and a table that quietly
+stops growing.
+
+</details>
+
+### 2. Server
+
+```bash
+pnpm install
+cp server/.env.example server/.env
+```
+
+Fill in `server/.env`:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API |
+| `DATABASE_URL` | Supabase → the **Connect** button in the top bar → Connection String. (Not Project Settings → Database; that page only resets the password now.) Used **only** by `migrate`; the server never reads it. Take the box labelled **Session pooler** (port 5432); its username is `postgres.<project-ref>`, dot included. Not the **transaction** pooler on 6543: the runner holds a session-scoped `pg_advisory_lock`, and that pooler hands the connection to someone else between statements. The *direct* connection works too, but only from an IPv6 host — which rules it out under Docker, see below |
+| `OPENAI_API_KEY` | platform.openai.com |
+| `CRM_AUTH_TOKEN` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `ALLOWED_ORIGINS` | leave as `chrome-extension://*` until you know your extension id |
+| `HOST` | optional; defaults to `127.0.0.1`. Only the container overrides it — see `docker-compose.yml` |
+| `TAVILY_API_KEY` | optional; enables company-news icebreakers on follow-ups |
+| `VECTOR_STORE` | optional; `pgvector` (default) or `qdrant` |
+| `QDRANT_URL`, `QDRANT_API_KEY` | required only when `VECTOR_STORE=qdrant` |
+
+Switching `VECTOR_STORE` changes where vectors live but does not migrate an
+existing corpus — re-index through the Vault, or the new store answers every
+query with nothing. `pnpm --filter @crm/server eval:retrieval` prints the active
+store name first for exactly this reason.
+
+Then apply the schema and start the proxy:
+
+```bash
+pnpm --filter @crm/server migrate # creates every table, once
+pnpm --filter @crm/server dev     # http://localhost:8787
+curl localhost:8787/health        # {"ok":true}
+```
+
+Node 22 — what the Dockerfile runs and what CI tests. Node 20 still works but is
+past end-of-life and `@supabase/supabase-js` prints a deprecation warning on it.
+
+#### Running it in the background
+
+`dev` holds a terminal open and dies when you close it. To have the proxy start
+at login and stay up on its own:
+
+```bash
+./scripts/macos-service.sh install
+```
+
+That registers a launchd agent (macOS). It starts the proxy now and at every
+login, restarts it if it exits, and writes stdout and stderr to
+`~/Library/Logs/jobsearchcrm/server.log`.
+
+```bash
+./scripts/macos-service.sh status      # registered? and is /health answering?
+./scripts/macos-service.sh logs        # follow the log
+./scripts/macos-service.sh restart     # after editing .env or server code
+./scripts/macos-service.sh uninstall
+```
+
+`status` checks the port separately from the agent, because launchd reports a
+crash-looping agent as registered — and the only question the extension cares
+about is whether `/health` answers.
+
+Run `install` **or** `dev`, not both; the second to start fails on a port
+already in use. The service runs `start`, not `dev`, so it does **not** reload
+on file changes — run `restart` after editing server code.
+
+On Linux the equivalent is a systemd user unit; there is no script for it yet.
+
+#### Running it with Docker
+
+Docker replaces both the Node install and the launchd agent, and works the same
+on macOS, Windows and Linux. Install Docker Desktop, fill in `server/.env` as
+above, then from the repository root:
+
+```bash
+docker compose --env-file server/.env up -d
+curl localhost:8787/health        # {"ok":true}
+```
+
+That builds one image and runs two things from it. `migrate` applies pending
+migrations and exits; `server` starts only once `migrate` has exited
+successfully, so a failed migration leaves you with the old schema and no
+server rather than a new server talking to a half-built database.
+
+`--env-file server/.env` is required, and **on every compose command, not just
+`up`**. Compose interpolates the file before it does anything at all, so even
+`docker compose ps` fails without it — with five "required variable is missing a
+value" errors rather than anything about the flag. It is needed because Compose
+looks in the repository root by default and the configuration lives in
+`server/.env`, so that the Docker and non-Docker paths read the same file.
+
+**If you have just reset your database password, wait two minutes before
+believing `password authentication failed for user "postgres"`.** The session
+pooler caches the old credential briefly, so the first run after a reset can be
+rejected with a message that sounds final. Observed here with a byte-identical
+connection string failing and then succeeding five minutes later with nothing
+changed. Retry before you start editing anything.
+
+**`DATABASE_URL` must be the session pooler here, not the direct connection.**
+On newer Supabase projects `db.<ref>.supabase.co` has an AAAA record and no A
+record, and Docker's Linux VM has no global IPv6 address, so `migrate` dies
+with:
+
+```
+getaddrinfo ENOTFOUND db.<ref>.supabase.co
+```
+
+which reads like a typo and is not one. `net.connect` resolves with
+`ADDRCONFIG`, which discards AAAA results on a host that cannot route them,
+leaving no addresses at all — a plain `dns.lookup` in the same container still
+returns the IPv6 address, so the name is fine and only the connect path fails.
+The session pooler is IPv4. (Verified inside the image, 2026-10-08.)
+
+Two deliberate details in `docker-compose.yml`, both load-bearing:
+
+- **Only `migrate` is given `DATABASE_URL`.** The server has no code that uses
+  it and should not hold a superuser password for the hours it runs (ADR-063).
+  This is why the file lists variables one by one instead of handing both
+  services the whole `.env`.
+- **The port is published as `127.0.0.1:8787:8787`.** Dropping the prefix would
+  expose the OpenAI and service-role keys to every device on your network. The
+  container itself binds `0.0.0.0`, because a container's `127.0.0.1` is its own
+  loopback and nothing outside can reach it; the loopback guarantee is provided
+  by that publish address instead. → `docs/SECURITY.md`.
+
+Useful afterwards:
+
+```bash
+docker compose --env-file server/.env ps            # STATUS should say (healthy)
+docker compose --env-file server/.env logs -f server
+docker compose --env-file server/.env restart server  # after editing server/.env
+docker compose --env-file server/.env down            # stop
+```
+
+Run Docker **or** `dev` **or** the launchd agent — never two at once; the second
+fails on a port already in use.
+
+### 3. Extension
+
+```bash
+pnpm --filter @crm/extension build
+```
+
+Load `extension/build/chrome-mv3-prod` via `chrome://extensions` → Developer
+mode → Load unpacked. Open the side panel, go to **Settings**, and enter the
+proxy URL and the same `CRM_AUTH_TOKEN`. Nothing works until both are set.
+
+For a tighter CORS policy, copy the extension id Chrome assigns and set
+`ALLOWED_ORIGINS=chrome-extension://<id>` in `server/.env`.
+
+Use `pnpm --filter @crm/extension dev` for hot reload during development.
+
 ## Development
 
 Run all three after every change:
 
 ```bash
 pnpm -r typecheck
-pnpm --filter @crm/server test      # 240 tests / 47 suites, node:test
+pnpm --filter @crm/server test      # 260 tests / 52 suites, node:test
 pnpm --filter @crm/extension build
 ```
 
 Or as one command, `pnpm verify`.
 
-Then verify no content-script bundle picked up zod — the barrel export pulls it
-in, which is why extension code imports runtime values from
-`@crm/shared/constants`:
+Then verify no **content-script** bundle picked up zod — the `@crm/shared`
+barrel pulls it in, Parcel stubs it, and the script dies at load while the
+typecheck, the build and the side panel all stay green. That is why extension
+code imports runtime values from zod-free subpaths like `@crm/shared/constants`:
 
 ```bash
-cd extension/build/chrome-mv3-prod && grep -c zod *.js ; true
+cd extension/build/chrome-mv3-prod && grep -c zod apply-watch.*.js linkedin-*.js
 ```
 
-Every count must be `0`.
+Every count must be `0`. The side panel is exempt — it is an extension page, not
+an injected script, so zod in `sidepanel.*.js` is fine. CI runs the same check
+with the same scope.
+
+Note that `pnpm verify` on a developer machine is *weaker* than CI, and
+deliberately so. `env.ts` throws at import, so any test whose import graph
+reaches it fails in CI, where no secrets are set — while locally `server/.env`
+sits beside the code and dotenv loads it, so the same suite passes. CI is
+therefore the only place the "pure logic lives away from `env`" rule in
+[`docs/RULES.md`](docs/RULES.md) is enforced, and it caught two files that had
+drifted on its first run. The fix is extraction, never dummy secrets.
 
 Everything tested is pure — arguments in, value out, no database, no network.
 The suites cover draft critique, persona classification, resume naming, the
 chunker, keyword extraction, the `toOrQuery` sparse-query builder, company
 matching, headline company extraction, the polling cadence constraints, RRF
-fusion, the retrieval metrics, the faithfulness grader, and the labelled eval
-set itself.
+fusion, the migration planner, the retrieval metrics, the faithfulness grader,
+and the labelled eval set itself.
 
 ### Evals
 
@@ -479,6 +494,11 @@ wobble between identical runs is noise, and a gate that fires on noise gets
 bypassed. `pnpm verify:release` runs everything above plus both evals; it is a
 release gate, not a per-commit one, because it spends real credit.
 
+Retrieval is scored **per leg** — dense alone, sparse alone, fused, and full
+(fused + reranked) — so a claim like "fusion helps" is a number rather than an
+assumption. It is how we know fusion buys coverage rather than precision, and
+that the reranker is not silently falling back to the fused order.
+
 Read [`docs/EVALUATION.md`](docs/EVALUATION.md) before changing anything under
 `server/src/rag/` or `server/src/agent/` — it explains what a bad number means,
 and why there is deliberately no LLM judge.
@@ -491,3 +511,27 @@ it, critique problems, repair passes, tokens and model calls summed across the
 *whole* run, latency, and the error if it failed. Faithfulness and cost over any
 window are a SQL query rather than a number someone has to remember to compute.
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) → Observability.
+
+## Documentation
+
+`docs/` is the source of truth. This README is an overview and a quickstart; it
+does not restate the architecture.
+
+| File | What it answers |
+| --- | --- |
+| [`docs/PRD.md`](docs/PRD.md) | What the product is and why, plus the known gaps |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How it is built, and the rules that keep it that way |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | How the side panel and toasts look and behave |
+| [`docs/RULES.md`](docs/RULES.md) | The rulebook for changing this codebase |
+| [`docs/TASKS.md`](docs/TASKS.md) | What is built, what is open |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Why each decision was made, and what failed first |
+| [`docs/MEMORY.md`](docs/MEMORY.md) | Current state and known issues |
+| [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) | What "working" means |
+| [`docs/EVALUATION.md`](docs/EVALUATION.md) | How retrieval and drafting are measured |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model and the full security checklist |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to get a change compiling and reviewed |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what is in scope |
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
