@@ -7,8 +7,8 @@ hybrid-search RAG over your own resume bullets.
 
 Every message is drafted, never sent. See [Security model](#security-model).
 
-**Want to run it?** → [Setup](#setup). **Want to see how it works?** →
-[How it works](#how-it-works).
+**Want to run it?** → [Install](#install) — Docker and Chrome, no developer
+tools. **Want to see how it works?** → [How it works](#how-it-works).
 
 ## The parts worth reading
 
@@ -34,7 +34,8 @@ extension/         Plasmo MV3 extension: content scripts, worker, side panel
 supabase/          SQL migrations (schema, pgvector, RLS)
 scripts/           Run the proxy as a background service
 Dockerfile         Server + migration runner; one image, two commands
-docker-compose.yml Migrate to completion, then start the server
+docker-compose.yml       Pull the published image; migrate, then serve
+docker-compose.build.yml Override: build that image from this checkout instead
 ```
 
 The extension never holds an OpenAI or Supabase key. It talks only to the proxy,
@@ -198,14 +199,25 @@ multi-megabyte binaries; the bytes live in a private Storage bucket.
 
 ## Setup
 
-Three steps: a Supabase project, the server, the extension. You do not run any
-SQL by hand.
+You need a Supabase project, an OpenAI key, Docker and Chrome. **You do not need
+Node, pnpm or git**, and you never run SQL by hand.
+
+There are two ways in:
+
+- **[Install](#install)** — download a published image and a prebuilt extension.
+  No developer tools. Start here.
+- **[From source](#from-source)** — clone and build, if you want to change the
+  code.
+
+Both share steps 1 and 2.
 
 ### 1. Supabase
 
 Create a project. That is the whole step.
 
-The schema is applied by a migration runner, once `server/.env` exists (step 2):
+The schema is applied by a migration runner that the `migrate` container runs
+for you on every `docker compose up`. Running it by hand, from a source
+checkout, is:
 
 ```bash
 pnpm --filter @crm/server migrate
@@ -283,14 +295,11 @@ stops growing.
 
 </details>
 
-### 2. Server
+### 2. Configuration
 
-```bash
-pnpm install
-cp server/.env.example server/.env
-```
-
-Fill in `server/.env`:
+Both paths read the same file. From a source checkout it is `server/.env`
+(`cp server/.env.example server/.env`); installing without the repo, it is
+whatever you point `--env-file` at.
 
 | Variable | Where it comes from |
 | --- | --- |
@@ -309,21 +318,145 @@ existing corpus — re-index through the Vault, or the new store answers every
 query with nothing. `pnpm --filter @crm/server eval:retrieval` prints the active
 store name first for exactly this reason.
 
-Then apply the schema and start the proxy:
+## Install
+
+Docker and Chrome. Nothing else.
+
+### 3. Run the server
+
+You need two files, and you do not need the repository for them:
 
 ```bash
-pnpm --filter @crm/server migrate # creates every table, once
-pnpm --filter @crm/server dev     # http://localhost:8787
+mkdir job-search-crm && cd job-search-crm
+curl -O https://raw.githubusercontent.com/kssharda0717-dev/job-search-crm/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/kssharda0717-dev/job-search-crm/main/server/.env.example
+```
+
+Fill in `.env` using the table above, then:
+
+```bash
+docker compose --env-file .env up -d
 curl localhost:8787/health        # {"ok":true}
 ```
 
-Node 22 — what the Dockerfile runs and what CI tests. Node 20 still works but is
-past end-of-life and `@supabase/supabase-js` prints a deprecation warning on it.
+That pulls one published image and runs two things from it. `migrate` applies
+pending migrations and exits; `server` starts only once `migrate` has exited
+successfully, so a failed migration leaves you with the old schema and no
+server rather than a new server talking to a half-built database.
 
-#### Running it in the background
+The image is `ghcr.io/kssharda0717-dev/job-search-crm`, built for Intel and
+Apple Silicon by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+from a tagged public commit, after that commit passes `pnpm verify`. To pin a
+version instead of following `latest`, set `CRM_IMAGE` in your `.env`:
 
-`dev` holds a terminal open and dies when you close it. To have the proxy start
-at login and stay up on its own:
+```
+CRM_IMAGE=ghcr.io/kssharda0717-dev/job-search-crm:v1.0.0
+```
+
+`--env-file .env` is required, and **on every compose command, not just `up`**.
+Compose interpolates the file before it does anything at all, so even
+`docker compose ps` fails without it — with five "required variable is missing a
+value" errors rather than anything about the flag. (From a source checkout the
+path is `--env-file server/.env`, so that the Docker and non-Docker commands
+read one file rather than two.)
+
+**If you have just reset your database password, wait two minutes before
+believing `password authentication failed for user "postgres"`.** The session
+pooler caches the old credential briefly, so the first run after a reset can be
+rejected with a message that sounds final. Observed here with a byte-identical
+connection string failing and then succeeding five minutes later with nothing
+changed. Retry before you start editing anything.
+
+**`DATABASE_URL` must be the session pooler here, not the direct connection.**
+On newer Supabase projects `db.<ref>.supabase.co` has an AAAA record and no A
+record, and Docker's Linux VM has no global IPv6 address, so `migrate` dies
+with:
+
+```
+getaddrinfo ENOTFOUND db.<ref>.supabase.co
+```
+
+which reads like a typo and is not one. `net.connect` resolves with
+`ADDRCONFIG`, which discards AAAA results on a host that cannot route them,
+leaving no addresses at all — a plain `dns.lookup` in the same container still
+returns the IPv6 address, so the name is fine and only the connect path fails.
+The session pooler is IPv4. (Verified inside the image, 2026-10-08.)
+
+Three deliberate details in `docker-compose.yml`, all load-bearing:
+
+- **Only `migrate` is given `DATABASE_URL`.** The server has no code that uses
+  it and should not hold a superuser password for the hours it runs (ADR-063).
+  This is why the file lists variables one by one instead of handing both
+  services the whole `.env`.
+- **The port is published as `127.0.0.1:8787:8787`.** Dropping the prefix would
+  expose the OpenAI and service-role keys to every device on your network. The
+  container itself binds `0.0.0.0`, because a container's `127.0.0.1` is its own
+  loopback and nothing outside can reach it; the loopback guarantee is provided
+  by that publish address instead. → `docs/SECURITY.md`.
+- **There is no `build:` key.** Compose prefers building over pulling whenever
+  both are available, so leaving one here would make every user compile the
+  dependency tree instead of downloading it. Building is opt-in through
+  `docker-compose.build.yml` — see [From source](#from-source).
+
+Useful afterwards:
+
+```bash
+docker compose --env-file .env ps            # STATUS should say (healthy)
+docker compose --env-file .env logs -f server
+docker compose --env-file .env restart server  # after editing .env
+docker compose --env-file .env down            # stop
+```
+
+### 4. Install the extension
+
+Download `job-search-crm-extension-v<version>.zip` from the
+[latest release](https://github.com/kssharda0717-dev/job-search-crm/releases/latest)
+and unzip it. The folder holds `manifest.json` directly — there is no nested
+directory to descend into.
+
+Then `chrome://extensions` → **Developer mode** on → **Load unpacked** → pick
+that folder. Open the side panel, go to **Settings**, and enter the proxy URL
+(`http://localhost:8787`) and the same `CRM_AUTH_TOKEN` you put in `.env`.
+Nothing works until both are set.
+
+For a tighter CORS policy, copy the extension id Chrome assigns and set
+`ALLOWED_ORIGINS=chrome-extension://<id>` in `.env`, then restart the server.
+
+## From source
+
+For changing the code. Needs Node 22 and pnpm — what the Dockerfile runs and
+what CI tests. Node 20 still works but is past end-of-life and
+`@supabase/supabase-js` prints a deprecation warning on it.
+
+```bash
+git clone https://github.com/kssharda0717-dev/job-search-crm.git
+cd job-search-crm
+pnpm install
+cp server/.env.example server/.env   # fill it in per the table above
+
+pnpm --filter @crm/server migrate    # creates every table, once
+pnpm --filter @crm/server dev        # http://localhost:8787
+curl localhost:8787/health           # {"ok":true}
+
+pnpm --filter @crm/extension build   # then load extension/build/chrome-mv3-prod
+```
+
+To build and run the container from your checkout rather than pulling the
+published image:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml \
+  --env-file server/.env up -d --build
+```
+
+Use `pnpm --filter @crm/extension dev` for hot reload while working on the
+extension.
+
+### Running the server in the background
+
+`dev` holds a terminal open and dies when you close it. Docker already restarts
+on its own (`restart: unless-stopped`); this is the equivalent for a source
+checkout without Docker:
 
 ```bash
 ./scripts/macos-service.sh install
@@ -350,89 +483,59 @@ on file changes — run `restart` after editing server code.
 
 On Linux the equivalent is a systemd user unit; there is no script for it yet.
 
-#### Running it with Docker
+Run the launchd agent **or** `dev` **or** Docker — never two at once; the second
+to start fails on a port already in use.
 
-Docker replaces both the Node install and the launchd agent, and works the same
-on macOS, Windows and Linux. Install Docker Desktop, fill in `server/.env` as
-above, then from the repository root:
+## Updating
 
-```bash
-docker compose --env-file server/.env up -d
-curl localhost:8787/health        # {"ok":true}
-```
+Two halves, updated separately. [`CHANGELOG.md`](CHANGELOG.md) says which of
+them a given release needs.
 
-That builds one image and runs two things from it. `migrate` applies pending
-migrations and exits; `server` starts only once `migrate` has exited
-successfully, so a failed migration leaves you with the old schema and no
-server rather than a new server talking to a half-built database.
-
-`--env-file server/.env` is required, and **on every compose command, not just
-`up`**. Compose interpolates the file before it does anything at all, so even
-`docker compose ps` fails without it — with five "required variable is missing a
-value" errors rather than anything about the flag. It is needed because Compose
-looks in the repository root by default and the configuration lives in
-`server/.env`, so that the Docker and non-Docker paths read the same file.
-
-**If you have just reset your database password, wait two minutes before
-believing `password authentication failed for user "postgres"`.** The session
-pooler caches the old credential briefly, so the first run after a reset can be
-rejected with a message that sounds final. Observed here with a byte-identical
-connection string failing and then succeeding five minutes later with nothing
-changed. Retry before you start editing anything.
-
-**`DATABASE_URL` must be the session pooler here, not the direct connection.**
-On newer Supabase projects `db.<ref>.supabase.co` has an AAAA record and no A
-record, and Docker's Linux VM has no global IPv6 address, so `migrate` dies
-with:
-
-```
-getaddrinfo ENOTFOUND db.<ref>.supabase.co
-```
-
-which reads like a typo and is not one. `net.connect` resolves with
-`ADDRCONFIG`, which discards AAAA results on a host that cannot route them,
-leaving no addresses at all — a plain `dns.lookup` in the same container still
-returns the IPv6 address, so the name is fine and only the connect path fails.
-The session pooler is IPv4. (Verified inside the image, 2026-10-08.)
-
-Two deliberate details in `docker-compose.yml`, both load-bearing:
-
-- **Only `migrate` is given `DATABASE_URL`.** The server has no code that uses
-  it and should not hold a superuser password for the hours it runs (ADR-063).
-  This is why the file lists variables one by one instead of handing both
-  services the whole `.env`.
-- **The port is published as `127.0.0.1:8787:8787`.** Dropping the prefix would
-  expose the OpenAI and service-role keys to every device on your network. The
-  container itself binds `0.0.0.0`, because a container's `127.0.0.1` is its own
-  loopback and nothing outside can reach it; the loopback guarantee is provided
-  by that publish address instead. → `docs/SECURITY.md`.
-
-Useful afterwards:
+**Server** — one command:
 
 ```bash
-docker compose --env-file server/.env ps            # STATUS should say (healthy)
-docker compose --env-file server/.env logs -f server
-docker compose --env-file server/.env restart server  # after editing server/.env
-docker compose --env-file server/.env down            # stop
+docker compose --env-file .env pull
+docker compose --env-file .env up -d
 ```
 
-Run Docker **or** `dev` **or** the launchd agent — never two at once; the second
-fails on a port already in use.
+`up` recreates the containers whose image changed, and because `server` depends
+on `migrate` completing, any new migration is applied before the new server
+starts.
 
-### 3. Extension
+**Extension** — download the new zip from the
+[releases page](https://github.com/kssharda0717-dev/job-search-crm/releases/latest),
+unzip it over the old folder, then `chrome://extensions` → **Reload** on this
+extension. Your settings and captured data survive; they live in
+`chrome.storage.local`, which a reload does not touch.
 
-```bash
-pnpm --filter @crm/extension build
-```
+### Why there is no auto-update
 
-Load `extension/build/chrome-mv3-prod` via `chrome://extensions` → Developer
-mode → Load unpacked. Open the side panel, go to **Settings**, and enter the
-proxy URL and the same `CRM_AUTH_TOKEN`. Nothing works until both are set.
+Deliberate, on three counts, and the first is disqualifying.
 
-For a tighter CORS policy, copy the extension id Chrome assigns and set
-`ALLOWED_ORIGINS=chrome-extension://<id>` in `server/.env`.
+An image-watcher such as Watchtower updates the **`server`** container and knows
+nothing about **`migrate`**. The first release carrying a new migration would
+therefore hand every user a server expecting a column their database does not
+have. Some of those failures are silent by design — `recordDraftRun` swallows an
+unknown-column error so that telemetry can never fail a draft — so the symptom
+would be a log line nobody reads. Updating has to go through
+`docker compose up`, which is the only thing that knows migrations run first.
 
-Use `pnpm --filter @crm/extension dev` for hot reload during development.
+Second, such a watcher is handed the Docker socket, which is root-equivalent on
+the host. This project's security story is that the keys never leave loopback;
+adding a daemon with that reach to save one command is a poor trade, and it
+would have to be written into `docs/SECURITY.md` looking exactly as bad as it
+is.
+
+Third, there is no staging environment and the evals cost real money, so they
+cannot run per-commit. Unattended updates would mean a regression reaching
+everyone before anyone noticed — during, for its users, a job search.
+
+If you want it unattended anyway, schedule the two commands above. Same
+mechanism, through the path that gets migration ordering right.
+
+An unpacked extension cannot auto-update at all: Chrome only does that for Web
+Store installs, and this project deliberately does not ship there. The Reload
+click is the cost of that choice.
 
 ## Development
 
@@ -529,6 +632,7 @@ does not restate the architecture.
 | [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) | What "working" means |
 | [`docs/EVALUATION.md`](docs/EVALUATION.md) | How retrieval and drafting are measured |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model and the full security checklist |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed per release, and which half needs updating |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to get a change compiling and reviewed |
 | [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what is in scope |
 

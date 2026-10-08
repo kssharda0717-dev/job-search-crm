@@ -1,0 +1,24 @@
+# Build the image from this checkout instead of pulling the published one.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml \
+#     --env-file server/.env up -d --build
+#
+# For contributors, and for anyone who would rather read the source than trust
+# a registry. It is a separate file rather than a `build:` key in the main one
+# because Compose prefers building over pulling whenever both are available,
+# which would silently make every user compile the dependency tree — the exact
+# cost the published image removes.
+#
+# The image name is overridden too. Tagging a local build as
+# `ghcr.io/...:latest` would leave a hand-built image sitting under the name
+# everyone else's `docker compose pull` resolves, and the next pull would
+# quietly replace it with something different.
+
+services:
+  migrate:
+    image: jobsearchcrm:local
+    build: .
+
+  server:
+    image: jobsearchcrm:local
+    build: .

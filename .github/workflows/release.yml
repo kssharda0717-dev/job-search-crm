@@ -1,0 +1,118 @@
+name: Release
+
+# Tags only. A release is a deliberate act, not something a push to main does by
+# accident — the artefacts this publishes are what strangers install, and
+# `latest` moving on its own would mean a half-finished main branch reaching
+# them.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Pushing to ghcr.io. The repository's own GITHUB_TOKEN is enough; there
+      # is no personal access token to leak or rotate.
+      packages: write
+      # Creating the GitHub Release and attaching the extension zip.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The tag is the only place the version is stated to the outside world,
+      # and package.json is the only place it is stated to the build. Letting
+      # them disagree ships an extension whose Settings panel reports a
+      # different version than the release it came from — which makes every
+      # future "what version are you on?" answer useless.
+      - name: Tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./extension/package.json').version")
+          root=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$root" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME says $tag, package.json says $root, extension/package.json says $pkg. Bump them in the same commit you tag."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same gate as CI, re-run here rather than trusted from the commit's
+      # earlier run. A tag can point at any commit, including one that was never
+      # pushed to a branch and so was never built. Publishing an artefact that
+      # was never typechecked is the one failure this job must not have.
+      #
+      # No secrets here either, for the reason given in ci.yml: `env.ts` throws
+      # at import, and this is where that stays enforced.
+      - run: pnpm verify
+
+      - name: No zod in any content-script bundle
+        run: |
+          if grep -l zod extension/build/chrome-mv3-prod/apply-watch.*.js \
+                          extension/build/chrome-mv3-prod/linkedin-*.js; then
+            echo "::error::A content-script bundle contains zod, so Parcel will stub it and the script will die at load."
+            exit 1
+          fi
+
+      # `pnpm verify` already produced extension/build/chrome-mv3-prod. Zipping
+      # the directory's *contents* rather than the directory matters: Chrome's
+      # "Load unpacked" wants the folder holding manifest.json, and a zip that
+      # unpacks to a single nested folder sends people one level too shallow.
+      - name: Package the extension
+        run: |
+          cd extension/build/chrome-mv3-prod
+          zip -r "$GITHUB_WORKSPACE/job-search-crm-extension-${GITHUB_REF_NAME}.zip" .
+
+      # arm64 as well as amd64. GitHub's runners are amd64, so without this an
+      # Apple Silicon Mac — the machine this project is developed on — runs the
+      # server under emulation. It works, slowly, until it does not.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercased because a GitHub username may contain capitals and a registry
+      # path may not. `kssharda0717-dev` is already lowercase; this is here so
+      # that a fork under a different account still builds.
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Both tags. The version tag is what someone pins to when they do not
+          # want to be surprised; `latest` is what docker-compose.yml resolves
+          # for everyone who has not thought about it.
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # `gh` is preinstalled on the runner, so no third-party action is trusted
+      # with `contents: write` here. `--generate-notes` writes the commit list
+      # since the previous tag, and falls back to the whole history on the first
+      # release without needing to be told which case it is in.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "job-search-crm-extension-${GITHUB_REF_NAME}.zip"

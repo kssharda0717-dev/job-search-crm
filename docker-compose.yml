@@ -1,11 +1,24 @@
 # Run with:
 #
-#   docker compose --env-file server/.env up
+#   docker compose --env-file server/.env up -d
 #
 # The `--env-file` flag is not decoration. Compose reads variables from the
 # project root by default, and this project's configuration lives in
 # `server/.env` because that is where the non-Docker commands look for it.
 # Pointing Compose at the same file means there is one place to edit, not two.
+#
+# This file names a published image and deliberately carries no `build:` key.
+# With both, Compose *builds* when the image is absent locally rather than
+# pulling it — so a first-time user would compile the whole dependency tree
+# instead of downloading 360KB, which is the entire thing the published image
+# exists to avoid. Building from source is an explicit opt-in instead:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# `CRM_IMAGE` is overridable so that pinning a version, or running a fork, needs
+# no edit to this file — put CRM_IMAGE=ghcr.io/you/job-search-crm:v1.2.0 in
+# server/.env. The default floats on `latest`, which only moves when a tag is
+# pushed; see .github/workflows/release.yml.
 
 name: jobsearchcrm
 
@@ -13,9 +26,15 @@ services:
   # Applies pending migrations and exits. `server` will not start until this
   # succeeds, so a failed migration keeps the old schema *and* an un-started
   # server rather than a new server talking to a half-built database.
+  #
+  # This ordering is also why updating must go through `docker compose up` and
+  # not through an image-watcher that restarts containers on its own: such a
+  # tool swaps `server` without re-running `migrate`, which is how new code ends
+  # up querying a column that does not exist yet. Several of those failures are
+  # swallowed by design (`recordDraftRun`), so the symptom is a log line nobody
+  # reads rather than an error anyone sees.
   migrate:
-    image: jobsearchcrm:local
-    build: .
+    image: ${CRM_IMAGE:-ghcr.io/kssharda0717-dev/job-search-crm:latest}
     command: ["pnpm", "--filter", "@crm/server", "migrate"]
     environment:
       # The only service that gets this. Listing variables explicitly rather
@@ -26,8 +45,7 @@ services:
     restart: "no"
 
   server:
-    image: jobsearchcrm:local
-    build: .
+    image: ${CRM_IMAGE:-ghcr.io/kssharda0717-dev/job-search-crm:latest}
     depends_on:
       migrate:
         condition: service_completed_successfully

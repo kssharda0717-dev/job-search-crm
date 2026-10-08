@@ -6,7 +6,8 @@ only the parts you need to get a change compiling and reviewed.
 
 ## Setup
 
-See [`README.md`](README.md) → Setup. The short version:
+See [`README.md`](README.md) → **From source** — not → Install, which pulls a
+published image and would hide your changes. The short version:
 
 ```bash
 pnpm install
@@ -14,6 +15,18 @@ cp server/.env.example server/.env   # fill in your own keys
 pnpm --filter @crm/server dev        # http://127.0.0.1:8787
 pnpm --filter @crm/extension dev     # load extension/build/chrome-mv3-dev unpacked
 ```
+
+To exercise the container path against your own code rather than the registry:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml \
+  --env-file server/.env up -d --build
+```
+
+Plain `docker compose up` pulls `ghcr.io/kssharda0717-dev/job-search-crm` and
+will run the last release, not your working tree. That is why `docker-compose.yml`
+has no `build:` key — Compose prefers building over pulling whenever both are
+present, which would make every user compile the dependency tree.
 
 You need your own Supabase project and OpenAI key. There is no shared
 development backend, and there is no hosted mode — the server binds to loopback
@@ -44,6 +57,18 @@ They are a release gate, not a pre-commit hook.
 
 If an eval fails a floor in `server/src/eval/gates.ts`, fix the regression.
 Never lower a floor to make a run pass.
+
+## Releasing
+
+Maintainers only. Pushing a `v*` tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which re-runs
+`pnpm verify` against the tagged commit, pushes a multi-architecture image to
+GHCR, and attaches the built extension to a GitHub Release.
+
+The version lives in three places and the workflow fails if they disagree: the
+tag, `package.json`, and `extension/package.json`. Bump the two files in the
+same commit you tag, add a `CHANGELOG.md` entry, and run `pnpm verify:release`
+by hand first — the tag job does not spend credit on the evals.
 
 ## Writing the change
 
