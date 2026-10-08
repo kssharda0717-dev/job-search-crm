@@ -335,9 +335,16 @@ curl -o .env https://raw.githubusercontent.com/kssharda0717-dev/job-search-crm/m
 Fill in `.env` using the table above, then:
 
 ```bash
-docker compose --env-file .env up -d
+docker compose --env-file .env up -d --wait
 curl localhost:8787/health        # {"ok":true}
 ```
+
+`--wait` is doing real work there. Without it `up -d` returns as soon as the
+containers have *started*, which is several seconds before the server is
+listening, and a `curl` on the next line fails with
+`curl: (52) Empty reply from server` — the connection is accepted by Docker's
+published port and then closed, which reads like a crash rather than a race.
+`--wait` blocks on the Dockerfile's `HEALTHCHECK` instead.
 
 That pulls one published image and runs two things from it. `migrate` applies
 pending migrations and exits; `server` starts only once `migrate` has exited
@@ -495,12 +502,14 @@ them a given release needs.
 
 ```bash
 docker compose --env-file .env pull
-docker compose --env-file .env up -d
+docker compose --env-file .env up -d --wait
 ```
 
 `up` recreates the containers whose image changed, and because `server` depends
 on `migrate` completing, any new migration is applied before the new server
-starts.
+starts. `--wait` holds the terminal until the new server reports healthy, so a
+failed upgrade is visible immediately rather than the next time you use the
+extension.
 
 **Extension** — download the new zip from the
 [releases page](https://github.com/kssharda0717-dev/job-search-crm/releases/latest),

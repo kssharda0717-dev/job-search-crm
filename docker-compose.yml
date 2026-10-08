@@ -1,6 +1,6 @@
 # Run with:
 #
-#   docker compose --env-file server/.env up -d
+#   docker compose --env-file server/.env up -d --wait
 #
 # The `--env-file` flag is not decoration. Compose reads variables from the
 # project root by default, and this project's configuration lives in
