@@ -45,11 +45,35 @@ so that a future reader does not "restore" a name from an old transcript:
 Technology names (Oracle Fusion HCM, PeopleSoft, Kafka, Greenhouse, hibob) are
 *not* PII and were deliberately left alone — they are what the code is about.
 
-**Still required of the user, and not something code can do:** rotate
-`SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` and `CRM_AUTH_TOKEN`. A credential
-was pasted into a chat window during development; `server/.env` is gitignored,
-but a key that has been in a transcript is burned regardless of what is
-committed.
+**Done 2026-10-08.** All four credentials were rotated before the first push —
+`OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CRM_AUTH_TOKEN` and the database
+password — and the new values were verified end to end (27 job rows returned
+through a containerised server using every one of them). The service-role key
+came back as `sb_secret_…` rather than the previous `eyJ…` JWT, so it is
+demonstrably a different key and not a re-read of the old one. Keys pasted into
+a chat window during development are burned regardless of what was committed;
+that is why this was a prerequisite rather than a tidy-up.
+
+### Published 2026-10-08
+
+`github.com/kssharda0717-dev/job-search-crm`, public, MIT. Before the first
+commit the 139 files that git would track were scanned for provider keys, JWTs,
+the project ref, emails, phone numbers, absolute home paths and real names:
+nothing but the `YOUR-PROJECT-REF` placeholder in `server/.env.example`. The
+ignore rules were tested against concrete paths in a scratch repository rather
+than read — `.env` alone did not cover `server/.env.bak`, so `.env.*` (plus
+`*.pem`, `*.key`, `*.p12`) was added and `!.env.example` re-asserted after it.
+
+**CI caught a real defect on the first run, and the defect was in the test
+story rather than the product.** `pnpm verify` reported 260 passing locally;
+GitHub reported 238 with two suites dead at import. `rerank.test.ts` and
+`draft-reuse.test.ts` imported pure functions out of `rag/rerank.ts` and
+`agent/draft.ts`, both of which reach `env.ts` through `openai`/`db` — and
+`env.ts` throws at import. A developer machine has `server/.env` beside the
+code, so dotenv satisfied it and 20 tests had never once run clean. Fixed by
+extraction (`rag/grades.ts`, `agent/draft-policy.ts`), not by giving CI dummy
+secrets, which would have deleted the only enforcement of the rule. CI also
+moved 20 → 22 to match the `node:22-slim` the Dockerfile ships.
 
 ### Fixed in the same pass
 
